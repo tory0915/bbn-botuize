@@ -1,0 +1,152 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() { 
+      return request.auth != null && request.auth.token.email_verified == true; 
+    }
+    
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    function isValidId(id) { 
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'wedaeho89@gmail.com' ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+    }
+
+    // ============================================
+    // 1. Users
+    // ============================================
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'name', 'role', 'createdAt'])
+        && data.keys().size() == 4
+        && data.email is string && data.email.size() > 0 && data.email.size() <= 150
+        && data.name is string && data.name.size() <= 100
+        && data.role in ['user', 'admin']
+        && data.createdAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isSignedIn() && isValidId(userId)
+        && request.auth.uid == userId
+        && isValidUser(incoming())
+        && incoming().email == request.auth.token.email
+        && (incoming().role == 'user' || request.auth.token.email == 'wedaeho89@gmail.com');
+
+      allow update: if isSignedIn() && isValidId(userId)
+        && (request.auth.uid == userId || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role'])
+        && incoming().name is string && incoming().name.size() <= 100
+        && incoming().role in ['user', 'admin']
+        && (isAdmin() || incoming().role == existing().role);
+    }
+
+    // ============================================
+    // 2. Products
+    // ============================================
+    function isValidProductCreate(data) {
+      return data.keys().hasAll(['name', 'description', 'price', 'imageUrl', 'sizes', 'isActive', 'createdAt', 'imageUrls'])
+        && data.keys().size() == 8
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.description is string && data.description.size() <= 1000
+        && data.price is number && data.price >= 0
+        && data.imageUrl is string && data.imageUrl.size() <= 1000000
+        && data.imageUrls is list && data.imageUrls.size() <= 20
+        && data.sizes is list && data.sizes.size() <= 10
+        && (data.sizes.size() == 0 || data.sizes[0] is string)
+        && data.isActive is bool
+        && data.createdAt == request.time;
+    }
+
+    function isValidProductUpdate(data) {
+      return data.keys().hasAll(['name', 'description', 'price', 'imageUrl', 'sizes', 'isActive', 'createdAt', 'imageUrls'])
+        && data.keys().size() == 8
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.description is string && data.description.size() <= 1000
+        && data.price is number && data.price >= 0
+        && data.imageUrl is string && data.imageUrl.size() <= 1000000
+        && data.imageUrls is list && data.imageUrls.size() <= 20
+        && data.sizes is list && data.sizes.size() <= 10
+        && (data.sizes.size() == 0 || data.sizes[0] is string)
+        && data.isActive is bool;
+    }
+
+    match /products/{productId} {
+      allow get: if true;
+      allow list: if true;
+
+      allow create: if isAdmin() && isValidId(productId) && isValidProductCreate(incoming());
+      
+      allow update: if isAdmin() && isValidId(productId) && isValidProductUpdate(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'price', 'imageUrl', 'imageUrls', 'sizes', 'isActive'])
+        && incoming().createdAt == existing().createdAt;
+        
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    // ============================================
+    // 3. Orders
+    // ============================================
+    function isValidOrderCreate(data) {
+      let hasShipping = data.keys().hasAll(['shippingInfo']);
+      let validKeys = hasShipping 
+        ? data.keys().hasAll(['userId', 'items', 'totalAmount', 'status', 'shippingInfo', 'createdAt', 'updatedAt']) && data.keys().size() == 7
+        : data.keys().hasAll(['userId', 'items', 'totalAmount', 'status', 'createdAt', 'updatedAt']) && data.keys().size() == 6;
+
+      return validKeys
+        && data.userId is string && data.userId.size() <= 128
+        && data.items is list && data.items.size() > 0 && data.items.size() <= 50
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.status in ['pending', 'processing', 'shipped', 'delivered']
+        && (!hasShipping || (
+             data.shippingInfo is map
+             && data.shippingInfo.keys().hasAll(['recipientName', 'phone', 'zipCode', 'address', 'detailAddress'])
+             && data.shippingInfo.recipientName is string && data.shippingInfo.recipientName.size() <= 100
+             && data.shippingInfo.phone is string && data.shippingInfo.phone.size() <= 100
+             && data.shippingInfo.zipCode is string && data.shippingInfo.zipCode.size() <= 20
+             && data.shippingInfo.address is string && data.shippingInfo.address.size() <= 300
+             && data.shippingInfo.detailAddress is string && data.shippingInfo.detailAddress.size() <= 300
+           ))
+        && data.createdAt == request.time
+        && data.updatedAt == request.time;
+    }
+
+    match /orders/{orderId} {
+      allow get: if isSignedIn() && isValidId(orderId) && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isSignedIn() && isValidId(orderId) && isValidOrderCreate(incoming())
+        && incoming().userId == request.auth.uid;
+      
+      allow update: if isSignedIn() && isValidId(orderId)
+        && isAdmin() 
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        && incoming().status in ['pending', 'processing', 'shipped', 'delivered']
+        && incoming().updatedAt == request.time
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().items == existing().items
+        && incoming().totalAmount == existing().totalAmount
+        && (existing().keys().hasAll(['shippingInfo']) ? incoming().shippingInfo == existing().shippingInfo : !incoming().keys().hasAll(['shippingInfo']));
+        
+      allow delete: if isAdmin() && isValidId(orderId);
+    }
+    
+    match /settings/{document} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}
